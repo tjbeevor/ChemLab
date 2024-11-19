@@ -14,24 +14,44 @@ st.set_page_config(page_title="LPBF AlSi10Mg Analysis", layout="wide")
 
 def load_and_preprocess_data(uploaded_file):
     """Load and preprocess the CSV data"""
-    df = pd.read_csv(uploaded_file)
+    # Read the first few rows to understand the structure
+    df = pd.read_csv(uploaded_file, header=[0,1])  # Read with multi-level headers
+    
+    # Flatten column names
+    df.columns = [f"{'' if pd.isna(c[0]) else c[0]}_{'' if pd.isna(c[1]) else c[1]}".strip('_').lower() for c in df.columns]
     
     # Clean column names
-    df.columns = df.columns.str.strip().str.lower()
+    df.columns = df.columns.str.replace(' ', '_')
+    df.columns = df.columns.str.replace('(', '').str.replace(')', '')
+    df.columns = df.columns.str.replace('%', 'percent')
+    
+    # Show column names for debugging
+    st.write("Cleaned columns:", sorted(list(df.columns)))
+    
+    # Drop unnamed columns
+    df = df.loc[:, ~df.columns.str.contains('^unnamed')]
+    
+    # Convert numeric columns
+    for col in df.columns:
+        try:
+            df[col] = pd.to_numeric(df[col], errors='ignore')
+        except:
+            continue
     
     # Handle direction column if it exists
-    if 'direction' in df.columns:
-        df['direction'] = df['direction'].str.upper()
+    direction_cols = [col for col in df.columns if 'direction' in col.lower()]
+    if direction_cols:
+        df[direction_cols[0]] = df[direction_cols[0]].str.upper() if df[direction_cols[0]].dtype == object else df[direction_cols[0]]
     
     # Handle numeric columns
     numeric_columns = df.select_dtypes(include=[np.number]).columns
     df[numeric_columns] = df[numeric_columns].fillna(df[numeric_columns].mean())
     
     # Calculate energy density if possible
-    power_cols = [col for col in df.columns if 'power' in col or 'w' in col]
-    speed_cols = [col for col in df.columns if 'speed' in col or 'mm/s' in col]
-    hatch_cols = [col for col in df.columns if 'hatch' in col]
-    thickness_cols = [col for col in df.columns if 'thickness' in col]
+    power_cols = [col for col in df.columns if 'power' in col.lower() or 'w' in col.lower()]
+    speed_cols = [col for col in df.columns if 'speed' in col.lower() or 'mm/s' in col.lower()]
+    hatch_cols = [col for col in df.columns if 'hatch' in col.lower()]
+    thickness_cols = [col for col in df.columns if 'thickness' in col.lower()]
     
     if power_cols and speed_cols and hatch_cols and thickness_cols:
         try:
@@ -40,7 +60,6 @@ def load_and_preprocess_data(uploaded_file):
             df['energy_density'] = np.nan
     
     return df
-
 def create_property_correlation_plot(df):
     """Create correlation matrix plot"""
     numeric_df = df.select_dtypes(include=[np.number])
