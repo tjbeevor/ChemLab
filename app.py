@@ -77,7 +77,31 @@ def extract_features(df):
         'properties': df[mech_props] if mech_props else pd.DataFrame()
     }
 
-[... rest of the code remains the same until the visualization functions ...]
+def create_property_correlation_plot(df):
+    """Create correlation matrix plot for mechanical properties"""
+    # Select only numeric columns for correlation
+    numeric_df = df.select_dtypes(include=[np.number])
+    
+    # Calculate correlation matrix
+    corr = numeric_df.corr()
+    
+    # Create heatmap using plotly
+    fig = px.imshow(
+        corr,
+        labels=dict(color="Correlation"),
+        color_continuous_scale="RdBu_r",
+        aspect="auto",
+        title="Feature Correlation Matrix"
+    )
+    
+    # Update layout for better readability
+    fig.update_layout(
+        xaxis_tickangle=-45,
+        width=800,
+        height=800
+    )
+    
+    return fig
 
 def create_process_property_plot(df, x_param, y_param, color_by='direction'):
     """Create scatter plot of process-property relationships"""
@@ -117,7 +141,56 @@ def create_parallel_coordinates_plot(df):
     )
     return fig
 
-[... rest of the code remains the same ...]
+def train_ml_model(df, target='uts'):
+    """Train Random Forest model for property prediction"""
+    features = ['power', 'speed', 'hatch', 'thickness', 
+                'solution temp', 'sol time', 'ageing temp', 'ageing time']
+    
+    # Check if required columns exist
+    available_features = [f for f in features if f in df.columns]
+    if not available_features:
+        raise ValueError("No required feature columns found in the dataset")
+    
+    if target not in df.columns:
+        raise ValueError(f"Target column '{target}' not found in the dataset")
+    
+    # Use only available features
+    X = df[available_features]
+    y = df[target].dropna()
+    
+    # Check if we have enough data
+    if len(y) < 10:
+        raise ValueError("Insufficient data points for training (minimum 10 required)")
+    
+    # Remove rows with NaN values
+    mask = ~X.isna().any(axis=1) & ~y.isna()
+    X = X[mask]
+    y = y[mask]
+    
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    
+    y_pred = model.predict(X_test)
+    r2 = r2_score(y_test, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+    
+    return model, (r2, rmse), (X_test, y_test, y_pred), available_features
+
+def plot_feature_importance(model, feature_names):
+    """Plot feature importance from trained model"""
+    importances = pd.DataFrame({
+        'feature': feature_names,
+        'importance': model.feature_importances_
+    }).sort_values('importance', ascending=True)
+    
+    fig = px.bar(importances, 
+                 x='importance', 
+                 y='feature', 
+                 orientation='h', 
+                 title='Feature Importance')
+    return fig
 
 # Main Application
 def main():
@@ -145,8 +218,108 @@ def main():
         except Exception as e:
             st.error(f"Error loading data: {str(e)}")
             st.session_state.data = None
+    
+    if st.session_state.data is not None:
+        if page == "Data Upload & Overview":
+            st.subheader("Data Overview")
+            st.write(st.session_state.data.head())
+            st.write("Dataset Shape:", st.session_state.data.shape)
             
-    [... rest of the main() function remains the same ...]
+            # Basic statistics
+            st.subheader("Statistical Summary")
+            st.write(st.session_state.data.describe())
+            
+        elif page == "Process-Property Analysis":
+            st.subheader("Process-Property Relationships")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                x_param = st.selectbox("X-axis Parameter",
+                    ['power', 'speed', 'energy_density', 'hatch', 'thickness'])
+            with col2:
+                y_param = st.selectbox("Y-axis Parameter",
+                    ['uts', 'ys', 'elongation', 'hardness'])
+            
+            fig = create_process_property_plot(
+                st.session_state.data, x_param, y_param)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            
+        elif page == "Heat Treatment Analysis":
+            st.subheader("Heat Treatment Analysis")
+            
+            fig = create_parallel_coordinates_plot(st.session_state.data)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            
+        elif page == "Statistical Analysis":
+            st.subheader("Statistical Analysis")
+            
+            # Correlation matrix
+            st.write("Correlation Matrix")
+            fig = create_property_correlation_plot(st.session_state.data)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # PCA Analysis
+            st.write("Principal Component Analysis")
+            features = extract_features(st.session_state.data)
+            if not features['process'].empty:
+                pca = PCA()
+                pca_result = pca.fit_transform(StandardScaler().fit_transform(
+                    features['process']))
+                
+                explained_variance = pd.DataFrame(
+                    pca.explained_variance_ratio_,
+                    columns=['Explained Variance Ratio']
+                )
+                st.write(explained_variance)
+            else:
+                st.warning("Insufficient process parameters for PCA analysis")
+            
+        elif page == "Machine Learning":
+            st.subheader("Property Prediction Model")
+            
+            # Only show properties that exist in the data
+            available_properties = [prop for prop in ['uts', 'ys', 'elongation', 'hardness'] 
+                                 if prop in st.session_state.data.columns]
+            
+            if not available_properties:
+                st.error("No mechanical properties found in the dataset")
+            else:
+                target_prop = st.selectbox(
+                    "Select Property to Predict",
+                    available_properties
+                )
+                
+                if st.button("Train Model"):
+                    try:
+                        model, metrics, predictions, used_features = train_ml_model(
+                            st.session_state.data, target_prop)
+                        
+                        st.write(f"Model R² Score: {metrics[0]:.3f}")
+                        st.write(f"Model RMSE: {metrics[1]:.3f}")
+                        
+                        # Feature importance plot
+                        fig = plot_feature_importance(model, used_features)
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Predictions vs Actual plot
+                        X_test, y_test, y_pred = predictions
+                        fig = px.scatter(x=y_test, y=y_pred,
+                            labels={'x': 'Actual', 'y': 'Predicted'},
+                            title=f'Predicted vs Actual {target_prop.upper()}')
+                        fig.add_trace(go.Scatter(
+                            x=[y_test.min(), y_test.max()],
+                            y=[y_test.min(), y_test.max()],
+                            mode='lines',
+                            name='Perfect Prediction'
+                        ))
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    except ValueError as e:
+                        st.error(f"Error training model: {str(e)}")
+                    except Exception as e:
+                        st.error(f"Unexpected error during model training: {str(e)}")
 
 if __name__ == "__main__":
     main()
