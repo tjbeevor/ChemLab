@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -5,132 +6,153 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # Page config
-st.set_page_config(page_title="LPBF AlSi10Mg Analysis", layout="wide")
+st.set_page_config(page_title="LPBF AlSi10Mg Analysis Dashboard", layout="wide")
 
-def clean_column_name(col):
-    """Clean and standardize column names"""
-    col = col.lower().strip()
-    if 'uts' in col or 'tensile_strength' in col:
-        return 'uts'
-    elif 'ys' in col or 'yield' in col:
-        return 'ys'
-    elif 'elongation' in col:
-        return 'elongation'
-    elif 'hardness' in col or 'hv' in col:
-        return 'hardness'
-    elif 'power' in col:
-        return 'power'
-    elif 'speed' in col or 'mm/s' in col:
-        return 'speed'
-    elif 'hatch' in col:
-        return 'hatch'
-    elif 'thickness' in col:
-        return 'thickness'
-    elif 'direction' in col:
-        return 'direction'
-    elif 'solution_temp' in col:
-        return 'solution_temp'
-    elif 'ageing_temp' in col:
-        return 'ageing_temp'
-    return col
-
-def load_data(uploaded_file):
-    """Load and preprocess data"""
-    try:
-        # Read the file
-        df = pd.read_csv(uploaded_file)
+def parse_lpbf_data(file):
+    """Parse LPBF data with proper column handling"""
+    # Read the CSV file
+    df = pd.read_csv(file, header=[0,1])
+    
+    # Extract the relevant columns and rename them appropriately
+    column_mapping = {
+        # Process parameters
+        ('LPBF process  parameter', 'power'): 'power',
+        ('LPBF process  parameter', 'speed'): 'speed',
+        ('LPBF process  parameter', 'Hatch '): 'hatch',
+        ('LPBF process  parameter', 'thickness'): 'thickness',
+        ('LPBF process  parameter', 'p/v'): 'p_v_ratio',
+        ('LPBF process  parameter', 'Direction'): 'build_direction',
         
-        # Clean column names
-        df.columns = [clean_column_name(col) for col in df.columns]
+        # Heat treatment parameters
+        ('Heat Treatment Method', 'solution temp'): 'solution_temp',
+        ('Heat Treatment Method', 'ageing temp'): 'ageing_temp',
+        ('Heat Treatment Method', 'Sol time'): 'solution_time',
+        ('Heat Treatment Method', 'ageing time'): 'ageing_time',
         
-        # Convert numeric columns
-        numeric_cols = ['power', 'speed', 'hatch', 'thickness', 'uts', 'ys', 
-                       'elongation', 'hardness', 'solution_temp', 'ageing_temp']
-        
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Calculate energy density if possible
-        if all(x in df.columns for x in ['power', 'speed', 'hatch', 'thickness']):
-            mask = (df['speed'] > 0) & (df['hatch'] > 0) & (df['thickness'] > 0)
-            df.loc[mask, 'energy_density'] = df.loc[mask, 'power'] / (df.loc[mask, 'speed'] * df.loc[mask, 'hatch'] * df.loc[mask, 'thickness'])
-        
-        return df
-    except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
-        return None
+        # Mechanical properties
+        ('Heat Treated Properties', 'UTS'): 'uts_ht',
+        ('Heat Treated Properties', 'YS'): 'ys_ht',
+        ('Heat Treated Properties', 'Elongation'): 'elongation_ht',
+        ('Heat Treated Properties', 'hardness'): 'hardness_ht',
+        ('As Built Properties', 'UTS'): 'uts_ab',
+        ('As Built Properties', 'YS'): 'ys_ab',
+        ('As Built Properties', 'Elongation'): 'elongation_ab',
+        ('As Built Properties', 'hardness'): 'hardness_ab'
+    }
+    
+    # Create new dataframe with mapped columns
+    processed_df = pd.DataFrame()
+    
+    for (old_header, old_subheader), new_name in column_mapping.items():
+        try:
+            processed_df[new_name] = pd.to_numeric(df[old_header][old_subheader], errors='coerce')
+        except:
+            continue
+    
+    # Calculate energy density
+    if all(x in processed_df.columns for x in ['power', 'speed', 'hatch', 'thickness']):
+        mask = (processed_df['speed'] > 0) & (processed_df['hatch'] > 0) & (processed_df['thickness'] > 0)
+        processed_df.loc[mask, 'energy_density'] = (
+            processed_df.loc[mask, 'power'] / 
+            (processed_df.loc[mask, 'speed'] * processed_df.loc[mask, 'hatch'] * processed_df.loc[mask, 'thickness'])
+        )
+    
+    return processed_df
 
 def main():
-    st.title("LPBF AlSi10Mg Analysis Dashboard")
+    st.title("🔬 LPBF AlSi10Mg Analysis Dashboard")
+    st.markdown("""
+    This dashboard analyzes Laser Powder Bed Fusion (LPBF) process parameters 
+    and their effects on AlSi10Mg mechanical properties.
+    """)
     
-    # File upload
     uploaded_file = st.file_uploader("Upload your LPBF data (CSV)", type='csv')
     
     if uploaded_file is not None:
-        df = load_data(uploaded_file)
+        df = parse_lpbf_data(uploaded_file)
         
         if df is not None:
-            # Show column names found
-            st.write("Found columns:", list(df.columns))
+            st.write("Found data columns:", list(df.columns))
             
             # Analysis selection
             analysis = st.radio(
                 "Select Analysis Type",
-                ["Process Parameters vs Properties", "Heat Treatment Analysis"]
+                ["Process-Property Relationships", "Heat Treatment Effects"]
             )
             
-            if analysis == "Process Parameters vs Properties":
-                # Process parameters analysis
-                process_params = [col for col in ['power', 'speed', 'hatch', 'thickness', 'energy_density'] 
-                                if col in df.columns]
-                properties = [col for col in ['uts', 'ys', 'elongation', 'hardness'] 
-                            if col in df.columns]
+            if analysis == "Process-Property Relationships":
+                process_params = ['power', 'speed', 'hatch', 'thickness', 'energy_density', 'p_v_ratio']
+                properties = [
+                    'uts_ab', 'ys_ab', 'elongation_ab', 'hardness_ab',
+                    'uts_ht', 'ys_ht', 'elongation_ht', 'hardness_ht'
+                ]
                 
-                if process_params and properties:
+                # Filter available parameters
+                available_process = [p for p in process_params if p in df.columns]
+                available_props = [p for p in properties if p in df.columns]
+                
+                if available_process and available_props:
                     col1, col2 = st.columns(2)
+                    
                     with col1:
-                        x_param = st.selectbox("Process Parameter", process_params)
+                        x_param = st.selectbox(
+                            "Process Parameter",
+                            options=available_process,
+                            format_func=lambda x: x.replace('_', ' ').upper()
+                        )
+                    
                     with col2:
-                        y_param = st.selectbox("Mechanical Property", properties)
+                        y_param = st.selectbox(
+                            "Mechanical Property",
+                            options=available_props,
+                            format_func=lambda x: x.replace('_', ' ').upper()
+                        )
                     
                     if x_param and y_param:
                         fig = px.scatter(
                             df,
                             x=x_param,
                             y=y_param,
-                            color='direction' if 'direction' in df.columns else None,
-                            trendline="ols"
+                            color='build_direction' if 'build_direction' in df.columns else None,
+                            trendline="ols",
+                            labels={
+                                x_param: x_param.replace('_', ' ').upper(),
+                                y_param: y_param.replace('_', ' ').upper()
+                            }
                         )
-                        st.plotly_chart(fig)
+                        st.plotly_chart(fig, use_container_width=True)
                         
                         # Show correlation
                         corr = df[x_param].corr(df[y_param])
                         st.write(f"Correlation coefficient: {corr:.3f}")
-                else:
-                    st.error("No process parameters or mechanical properties found in the data")
-            
-            else:
-                # Heat treatment analysis
-                ht_params = [col for col in ['solution_temp', 'ageing_temp'] 
-                           if col in df.columns]
-                mech_props = [col for col in ['uts', 'ys', 'elongation', 'hardness'] 
-                            if col in df.columns]
                 
-                if ht_params and mech_props:
-                    plot_cols = ht_params + mech_props
+            else:  # Heat Treatment Effects
+                ht_params = ['solution_temp', 'ageing_temp', 'solution_time', 'ageing_time']
+                mech_props = ['uts_ht', 'ys_ht', 'elongation_ht', 'hardness_ht']
+                
+                available_ht = [p for p in ht_params if p in df.columns]
+                available_props = [p for p in mech_props if p in df.columns]
+                
+                if available_ht and available_props:
+                    plot_cols = available_ht + available_props
                     plot_df = df[plot_cols].dropna()
                     
                     if not plot_df.empty:
                         fig = go.Figure(data=
                             go.Parcoords(
-                                line=dict(color=plot_df[mech_props[0]], colorscale='Viridis'),
-                                dimensions=[dict(range=[plot_df[col].min(), plot_df[col].max()],
-                                               label=col.upper(),
-                                               values=plot_df[col]) for col in plot_cols]
+                                line=dict(color=plot_df[available_props[0]], 
+                                         colorscale='Viridis'),
+                                dimensions=[
+                                    dict(
+                                        range=[plot_df[col].min(), plot_df[col].max()],
+                                        label=col.replace('_', ' ').upper(),
+                                        values=plot_df[col]
+                                    ) for col in plot_cols
+                                ]
                             )
                         )
-                        st.plotly_chart(fig)
+                        fig.update_layout(height=600)
+                        st.plotly_chart(fig, use_container_width=True)
                     else:
                         st.error("Insufficient data for heat treatment analysis")
                 else:
@@ -138,3 +160,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
