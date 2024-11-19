@@ -18,56 +18,80 @@ def load_and_preprocess_data(file_content):
         # Read CSV file
         df = pd.read_csv(file_content)
         
+        # Debug column names
+        st.write("Original columns:", df.columns.tolist())
+        
         # Clean column names
         df.columns = df.columns.str.strip().str.lower()
         df.columns = df.columns.str.replace(' ', '_')
         
-        # Map common column names
-        column_map = {
-            col: 'power' for col in df.columns if any(x in col.lower() for x in ['power', '_w_'])
+        # Map specific material science column names
+        process_params = {
+            'power': ['power', 'w', 'laser_power'],
+            'speed': ['speed', 'mm/s', 'scanning_speed', 'scan_speed'],
+            'hatch': ['hatch', 'hatch_spacing', 'hatch_distance'],
+            'thickness': ['thickness', 'layer_thickness'],
+            'energy_density': ['energy_density', 'ved', 'volumetric_energy_density'],
+            'p/v': ['p/v', 'power_speed_ratio'],
+            'bt': ['bt', 'bed_temperature', 'build_temperature']
         }
-        column_map.update({
-            col: 'speed' for col in df.columns if any(x in col.lower() for x in ['speed', 'mm/s'])
-        })
-        column_map.update({
-            col: 'hatch' for col in df.columns if 'hatch' in col.lower()
-        })
-        column_map.update({
-            col: 'thickness' for col in df.columns if 'thickness' in col.lower()
-        })
-        column_map.update({
-            col: 'uts' for col in df.columns if any(x in col.lower() for x in ['uts', 'tensile_strength'])
-        })
-        column_map.update({
-            col: 'ys' for col in df.columns if any(x in col.lower() for x in ['ys', 'yield_strength'])
-        })
-        column_map.update({
-            col: 'elongation' for col in df.columns if 'elongation' in col.lower()
-        })
-        column_map.update({
-            col: 'hardness' for col in df.columns if any(x in col.lower() for x in ['hardness', 'hv'])
-        })
+        
+        mechanical_props = {
+            'uts': ['uts', 'tensile_strength', 'ultimate_tensile_strength'],
+            'ys': ['ys', 'yield_strength', 'yield_stress'],
+            'elongation': ['elongation', 'elongation_%', 'strain_at_break'],
+            'hardness': ['hardness', 'hv', 'vickers_hardness']
+        }
+        
+        heat_treatment = {
+            'solution_temp': ['solution_temp', 'solution_temperature', 'heat_treatment_method_solution_temp'],
+            'ageing_temp': ['ageing_temp', 'aging_temperature', 'heat_treatment_method_ageing_temp'],
+            'solution_time': ['solution_time', 'sol_time', 'heat_treatment_method_sol_time'],
+            'ageing_time': ['ageing_time', 'aging_time', 'heat_treatment_method_ageing_time']
+        }
+        
+        # Function to find matching column
+        def find_matching_column(columns, keywords):
+            for col in columns:
+                if any(keyword in col.lower() for keyword in keywords):
+                    return col
+            return None
+        
+        # Create column mapping
+        column_map = {}
+        for param, keywords in {**process_params, **mechanical_props, **heat_treatment}.items():
+            matching_col = find_matching_column(df.columns, keywords)
+            if matching_col:
+                column_map[matching_col] = param
+        
+        # Debug mapped columns
+        st.write("Mapped columns:", column_map)
         
         # Rename columns
         df = df.rename(columns=column_map)
         
         # Convert numeric columns safely
         for col in df.columns:
-            try:
-                if 'direction' not in col.lower():
-                    df[col] = pd.to_numeric(df[col])
-            except:
-                continue
+            if col not in ['direction', 'scanning', 'machine', 'powder_mfg']:
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                except:
+                    continue
         
-        # Handle direction column
+        # Handle direction column specifically
         direction_cols = [col for col in df.columns if 'direction' in col.lower()]
         if direction_cols:
-            df['direction'] = df[direction_cols[0]]
+            df['build_direction'] = df[direction_cols[0]]
         
-        # Calculate energy density
-        if all(x in df.columns for x in ['power', 'speed', 'hatch', 'thickness']):
-            mask = (df['speed'] != 0) & (df['hatch'] != 0) & (df['thickness'] != 0)
+        # Calculate energy density if not present
+        if 'energy_density' not in df.columns and all(x in df.columns for x in ['power', 'speed', 'hatch', 'thickness']):
+            mask = (df['speed'] > 0) & (df['hatch'] > 0) & (df['thickness'] > 0)
             df.loc[mask, 'energy_density'] = df.loc[mask, 'power'] / (df.loc[mask, 'speed'] * df.loc[mask, 'hatch'] * df.loc[mask, 'thickness'])
+        
+        # Debug available columns after processing
+        st.write("Available process parameters:", [col for col in process_params.keys() if col in df.columns])
+        st.write("Available mechanical properties:", [col for col in mechanical_props.keys() if col in df.columns])
+        st.write("Available heat treatment parameters:", [col for col in heat_treatment.keys() if col in df.columns])
         
         return df
     
@@ -75,52 +99,112 @@ def load_and_preprocess_data(file_content):
         st.error(f"Error processing data: {str(e)}")
         return None
 
-def create_process_property_plot(df, x_param, y_param, color_by='direction'):
-    """Create scatter plot"""
+def create_process_property_plot(df, x_param, y_param):
+    """Create scatter plot with build direction coloring"""
     if x_param not in df.columns or y_param not in df.columns:
+        st.error(f"Required columns not found: {x_param} or {y_param}")
         return None
-        
+    
+    # Create figure
     fig = px.scatter(
         df, 
         x=x_param,
         y=y_param,
-        color=color_by if color_by in df.columns else None,
-        title=f"{y_param.upper()} vs {x_param.upper()}",
-        labels={x_param: x_param.upper(), y_param: y_param.upper()}
+        color='build_direction' if 'build_direction' in df.columns else None,
+        title=f"Relationship between {y_param.upper()} and {x_param.upper()}",
+        labels={
+            x_param: x_param.upper(),
+            y_param: y_param.upper(),
+            'build_direction': 'Build Direction'
+        }
     )
     
-    fig.update_layout(height=600)
+    # Add trendline
+    fig.add_traces(
+        px.scatter(
+            df, 
+            x=x_param, 
+            y=y_param, 
+            trendline="ols"
+        ).data
+    )
+    
+    fig.update_layout(
+        height=600,
+        xaxis_title=f"{x_param.upper()} ({get_unit(x_param)})",
+        yaxis_title=f"{y_param.upper()} ({get_unit(y_param)})"
+    )
+    
     return fig
 
+def get_unit(param):
+    """Get units for parameters"""
+    units = {
+        'power': 'W',
+        'speed': 'mm/s',
+        'hatch': 'mm',
+        'thickness': 'mm',
+        'energy_density': 'J/mm³',
+        'uts': 'MPa',
+        'ys': 'MPa',
+        'elongation': '%',
+        'hardness': 'HV',
+        'solution_temp': '°C',
+        'ageing_temp': '°C',
+        'solution_time': 'hrs',
+        'ageing_time': 'hrs'
+    }
+    return units.get(param, '')
+
 def create_parallel_coordinates_plot(df):
-    """Create parallel coordinates plot"""
-    ht_cols = ['solution_temp', 'ageing_temp', 'uts', 'ys', 'elongation', 'hardness']
+    """Create parallel coordinates plot for heat treatment analysis"""
+    # Identify relevant columns
+    ht_cols = ['solution_temp', 'ageing_temp', 'solution_time', 'ageing_time', 
+               'uts', 'ys', 'elongation', 'hardness']
     available_cols = [col for col in ht_cols if col in df.columns]
     
-    if not available_cols:
+    if len(available_cols) < 2:
+        st.error("Insufficient heat treatment or mechanical property data for analysis")
         return None
-        
-    # Convert columns to numeric and handle NaN values
-    plot_df = df[available_cols].copy()
-    for col in available_cols:
-        plot_df[col] = pd.to_numeric(plot_df[col], errors='coerce')
     
+    # Prepare data
+    plot_df = df[available_cols].copy()
+    
+    # Handle missing values
     plot_df = plot_df.fillna(plot_df.mean())
     
+    # Create parallel coordinates plot
     fig = go.Figure(data=
         go.Parcoords(
-            line=dict(color=plot_df[available_cols[0]], colorscale='Viridis'),
-            dimensions=[dict(range=[plot_df[dim].min(), plot_df[dim].max()],
-                           label=dim.upper(),
-                           values=plot_df[dim]) for dim in available_cols]
+            line=dict(
+                color=plot_df[available_cols[0]],
+                colorscale='Viridis',
+                showscale=True
+            ),
+            dimensions=[
+                dict(
+                    range=[plot_df[dim].min(), plot_df[dim].max()],
+                    label=f"{dim.upper()} ({get_unit(dim)})",
+                    values=plot_df[dim]
+                ) for dim in available_cols
+            ]
         )
     )
     
-    fig.update_layout(height=600)
+    fig.update_layout(
+        height=600,
+        title="Heat Treatment Parameters and Mechanical Properties Relationship"
+    )
+    
     return fig
 
 def main():
-    st.title("LPBF AlSi10Mg Analysis Dashboard")
+    st.title("🔬 LPBF AlSi10Mg Analysis Dashboard")
+    st.markdown("""
+    This dashboard analyzes Laser Powder Bed Fusion (LPBF) process parameters and their effects 
+    on AlSi10Mg mechanical properties. Upload your data to explore process-property relationships 
+    and heat treatment effects.
+    """)
     
     # Sidebar navigation
     page = st.sidebar.selectbox(
@@ -138,18 +222,18 @@ def main():
         
         if df is not None:
             if page == "Data Upload & Overview":
-                st.subheader("Data Overview")
+                st.subheader("📊 Data Overview")
                 st.write("Dataset Shape:", df.shape)
                 st.write(df.head())
                 
-                st.subheader("Statistical Summary")
+                st.subheader("📈 Statistical Summary")
                 st.write(df.describe())
                 
             elif page == "Process-Property Analysis":
-                st.subheader("Process-Property Relationships")
+                st.subheader("🔍 Process-Property Relationships")
                 
-                # Define process parameters and properties
-                process_params = ['power', 'speed', 'hatch', 'thickness', 'energy_density']
+                # Define available parameters
+                process_params = ['power', 'speed', 'hatch', 'thickness', 'energy_density', 'p/v', 'bt']
                 properties = ['uts', 'ys', 'elongation', 'hardness']
                 
                 # Filter available columns
@@ -157,27 +241,47 @@ def main():
                 available_properties = [p for p in properties if p in df.columns]
                 
                 if not available_process or not available_properties:
-                    st.error("No process parameters or properties found in the data")
+                    st.error("""
+                    No process parameters or properties found in the data. 
+                    Required columns should include parameters like 'power', 'speed', 'hatch' 
+                    and properties like 'UTS', 'YS', 'elongation', 'hardness'.
+                    """)
                 else:
                     col1, col2 = st.columns(2)
                     with col1:
-                        x_param = st.selectbox("X-axis Parameter", options=available_process)
+                        x_param = st.selectbox(
+                            "Process Parameter (X-axis)", 
+                            options=available_process,
+                            format_func=lambda x: f"{x.upper()} ({get_unit(x)})"
+                        )
                     with col2:
-                        y_param = st.selectbox("Y-axis Parameter", options=available_properties)
+                        y_param = st.selectbox(
+                            "Mechanical Property (Y-axis)", 
+                            options=available_properties,
+                            format_func=lambda x: f"{x.upper()} ({get_unit(x)})"
+                        )
                     
                     if x_param and y_param:
                         fig = create_process_property_plot(df, x_param, y_param)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Add statistical analysis
+                            st.subheader("📊 Statistical Analysis")
+                            correlation = df[x_param].corr(df[y_param])
+                            st.write(f"Correlation coefficient between {x_param.upper()} and {y_param.upper()}: {correlation:.3f}")
             
             elif page == "Heat Treatment Analysis":
-                st.subheader("Heat Treatment Analysis")
+                st.subheader("🔥 Heat Treatment Analysis")
                 
                 fig = create_parallel_coordinates_plot(df)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.warning("Insufficient data for heat treatment analysis")
+                    st.markdown("""
+                    The parallel coordinates plot shows relationships between heat treatment parameters 
+                    and resulting mechanical properties. Each line represents a sample, and the color 
+                    gradient helps identify patterns in the data.
+                    """)
 
 if __name__ == "__main__":
     main()
