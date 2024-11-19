@@ -14,52 +14,75 @@ st.set_page_config(page_title="LPBF AlSi10Mg Analysis", layout="wide")
 
 def load_and_preprocess_data(uploaded_file):
     """Load and preprocess the CSV data"""
-    # Read the first few rows to understand the structure
-    df = pd.read_csv(uploaded_file, header=[0,1])  # Read with multi-level headers
-    
-    # Flatten column names
-    df.columns = [f"{'' if pd.isna(c[0]) else c[0]}_{'' if pd.isna(c[1]) else c[1]}".strip('_').lower() for c in df.columns]
+    # Read CSV file
+    df = pd.read_csv(uploaded_file, header=[0])
     
     # Clean column names
+    df.columns = df.columns.str.strip().str.lower()
     df.columns = df.columns.str.replace(' ', '_')
-    df.columns = df.columns.str.replace('(', '').str.replace(')', '')
-    df.columns = df.columns.str.replace('%', 'percent')
     
-    # Show column names for debugging
-    st.write("Cleaned columns:", sorted(list(df.columns)))
+    # Map common column names
+    column_map = {
+        col: 'power' for col in df.columns if 'power' in col.lower() or 'w' in col.lower()
+    }
+    column_map.update({
+        col: 'speed' for col in df.columns if 'speed' in col.lower() or 'mm/s' in col.lower()
+    })
+    column_map.update({
+        col: 'hatch' for col in df.columns if 'hatch' in col.lower()
+    })
+    column_map.update({
+        col: 'thickness' for col in df.columns if 'thickness' in col.lower()
+    })
+    column_map.update({
+        col: 'uts' for col in df.columns if 'uts' in col.lower() or 'tensile_strength' in col.lower()
+    })
+    column_map.update({
+        col: 'ys' for col in df.columns if 'ys' in col.lower() or 'yield_strength' in col.lower()
+    })
+    column_map.update({
+        col: 'elongation' for col in df.columns if 'elongation' in col.lower()
+    })
+    column_map.update({
+        col: 'hardness' for col in df.columns if 'hardness' in col.lower() or 'hv' in col.lower()
+    })
+    column_map.update({
+        col: 'solution_temp' for col in df.columns if 'solution_temp' in col.lower()
+    })
+    column_map.update({
+        col: 'ageing_temp' for col in df.columns if 'ageing_temp' in col.lower()
+    })
     
-    # Drop unnamed columns
-    df = df.loc[:, ~df.columns.str.contains('^unnamed')]
+    # Rename columns
+    df = df.rename(columns=column_map)
     
     # Convert numeric columns
     for col in df.columns:
         try:
-            df[col] = pd.to_numeric(df[col], errors='ignore')
+            if 'direction' not in col.lower():
+                df[col] = pd.to_numeric(df[col], errors='ignore')
         except:
             continue
     
-    # Handle direction column if it exists
+    # Handle direction column
     direction_cols = [col for col in df.columns if 'direction' in col.lower()]
     if direction_cols:
-        df[direction_cols[0]] = df[direction_cols[0]].str.upper() if df[direction_cols[0]].dtype == object else df[direction_cols[0]]
+        df['direction'] = df[direction_cols[0]].str.upper() if df[direction_cols[0]].dtype == object else df[direction_cols[0]]
     
-    # Handle numeric columns
+    # Calculate energy density
+    if all(x in df.columns for x in ['power', 'speed', 'hatch', 'thickness']):
+        try:
+            df['energy_density'] = df['power'] / (df['speed'] * df['hatch'] * df['thickness'])
+        except:
+            st.warning("Could not calculate energy density")
+            df['energy_density'] = np.nan
+    
+    # Handle missing values for numeric columns
     numeric_columns = df.select_dtypes(include=[np.number]).columns
     df[numeric_columns] = df[numeric_columns].fillna(df[numeric_columns].mean())
     
-    # Calculate energy density if possible
-    power_cols = [col for col in df.columns if 'power' in col.lower() or 'w' in col.lower()]
-    speed_cols = [col for col in df.columns if 'speed' in col.lower() or 'mm/s' in col.lower()]
-    hatch_cols = [col for col in df.columns if 'hatch' in col.lower()]
-    thickness_cols = [col for col in df.columns if 'thickness' in col.lower()]
-    
-    if power_cols and speed_cols and hatch_cols and thickness_cols:
-        try:
-            df['energy_density'] = df[power_cols[0]] / (df[speed_cols[0]] * df[hatch_cols[0]] * df[thickness_cols[0]])
-        except:
-            df['energy_density'] = np.nan
-    
     return df
+
 def create_property_correlation_plot(df):
     """Create correlation matrix plot"""
     numeric_df = df.select_dtypes(include=[np.number])
@@ -82,6 +105,10 @@ def create_property_correlation_plot(df):
 
 def create_process_property_plot(df, x_param, y_param, color_by='direction'):
     """Create scatter plot"""
+    if x_param is None or y_param is None:
+        st.error("Please select both X and Y parameters")
+        return None
+        
     fig = px.scatter(
         df, 
         x=x_param,
@@ -96,18 +123,20 @@ def create_process_property_plot(df, x_param, y_param, color_by='direction'):
 
 def create_parallel_coordinates_plot(df):
     """Create parallel coordinates plot"""
-    # Find relevant columns
-    ht_cols = [col for col in df.columns if any(x in col for x in ['temp', 'time', 'uts', 'ys', 'elongation'])]
+    # Find heat treatment and property columns
+    ht_cols = ['solution_temp', 'ageing_temp', 'uts', 'ys', 'elongation', 'hardness']
+    available_cols = [col for col in ht_cols if col in df.columns]
     
-    if not ht_cols:
+    if not available_cols:
+        st.error("No heat treatment or property columns found")
         return None
         
     fig = go.Figure(data=
         go.Parcoords(
-            line=dict(color=df[ht_cols[0]], colorscale='Viridis'),
+            line=dict(color=df[available_cols[0]], colorscale='Viridis'),
             dimensions=[dict(range=[df[dim].min(), df[dim].max()],
                            label=dim.upper(),
-                           values=df[dim]) for dim in ht_cols]
+                           values=df[dim]) for dim in available_cols]
         )
     )
     
@@ -197,17 +226,33 @@ def main():
         elif page == "Process-Property Analysis":
             st.subheader("Process-Property Relationships")
             
-            # Get numeric columns
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            # Define process parameters and properties
+            process_params = ['power', 'speed', 'hatch', 'thickness', 'energy_density']
+            properties = ['uts', 'ys', 'elongation', 'hardness']
             
-            col1, col2 = st.columns(2)
-            with col1:
-                x_param = st.selectbox("X-axis Parameter", numeric_cols)
-            with col2:
-                y_param = st.selectbox("Y-axis Parameter", numeric_cols)
+            # Filter available columns
+            available_process = [p for p in process_params if p in df.columns]
+            available_properties = [p for p in properties if p in df.columns]
             
-            fig = create_process_property_plot(df, x_param, y_param)
-            st.plotly_chart(fig, use_container_width=True)
+            if not available_process or not available_properties:
+                st.error("No process parameters or properties found in the data")
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    x_param = st.selectbox(
+                        "X-axis Parameter (Process)",
+                        options=available_process
+                    )
+                with col2:
+                    y_param = st.selectbox(
+                        "Y-axis Parameter (Property)",
+                        options=available_properties
+                    )
+                
+                if x_param and y_param:
+                    fig = create_process_property_plot(df, x_param, y_param)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
             
         elif page == "Heat Treatment Analysis":
             st.subheader("Heat Treatment Analysis")
@@ -215,8 +260,6 @@ def main():
             fig = create_parallel_coordinates_plot(df)
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Insufficient data for heat treatment analysis")
             
         elif page == "Statistical Analysis":
             st.subheader("Statistical Analysis")
@@ -253,13 +296,16 @@ def main():
         elif page == "Machine Learning":
             st.subheader("Property Prediction Model")
             
-            # Get numeric columns as potential targets
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            # Get available properties for prediction
+            available_properties = [p for p in ['uts', 'ys', 'elongation', 'hardness'] 
+                                 if p in df.columns]
             
-            if len(numeric_cols) > 0:
+            if not available_properties:
+                st.error("No mechanical properties found in the dataset")
+            else:
                 target_prop = st.selectbox(
                     "Select Property to Predict",
-                    numeric_cols
+                    available_properties
                 )
                 
                 if st.button("Train Model"):
@@ -289,8 +335,6 @@ def main():
                         
                     except Exception as e:
                         st.error(f"Error in model training: {str(e)}")
-            else:
-                st.error("No numeric columns found for modeling")
 
 if __name__ == "__main__":
     main()
