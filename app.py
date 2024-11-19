@@ -9,54 +9,63 @@ st.set_page_config(page_title="LPBF AlSi10Mg Analysis Dashboard", layout="wide")
 
 def parse_lpbf_data(file):
     """Parse LPBF data with proper column handling"""
-    # Read the CSV file
-    df = pd.read_csv(file, header=[0,1])
-    
-    # Extract the relevant columns and rename them appropriately
-    column_mapping = {
-        # Process parameters
-        ('LPBF process  parameter', 'power'): 'power',
-        ('LPBF process  parameter', 'speed'): 'speed',
-        ('LPBF process  parameter', 'Hatch '): 'hatch',
-        ('LPBF process  parameter', 'thickness'): 'thickness',
-        ('LPBF process  parameter', 'p/v'): 'p_v_ratio',
-        ('LPBF process  parameter', 'Direction'): 'build_direction',
+    try:
+        # Read raw CSV first to examine structure
+        df_raw = pd.read_csv(file)
+        st.write("Raw columns:", df_raw.columns.tolist())
         
-        # Heat treatment parameters
-        ('Heat Treatment Method', 'solution temp'): 'solution_temp',
-        ('Heat Treatment Method', 'ageing temp'): 'ageing_temp',
-        ('Heat Treatment Method', 'Sol time'): 'solution_time',
-        ('Heat Treatment Method', 'ageing time'): 'ageing_time',
+        # Read the CSV file with proper header handling
+        df = pd.read_csv(file, skiprows=[0])  # Skip the merged cells row
         
-        # Mechanical properties
-        ('Heat Treated Properties', 'UTS'): 'uts_ht',
-        ('Heat Treated Properties', 'YS'): 'ys_ht',
-        ('Heat Treated Properties', 'Elongation'): 'elongation_ht',
-        ('Heat Treated Properties', 'hardness'): 'hardness_ht',
-        ('As Built Properties', 'UTS'): 'uts_ab',
-        ('As Built Properties', 'YS'): 'ys_ab',
-        ('As Built Properties', 'Elongation'): 'elongation_ab',
-        ('As Built Properties', 'hardness'): 'hardness_ab'
-    }
-    
-    # Create new dataframe with mapped columns
-    processed_df = pd.DataFrame()
-    
-    for (old_header, old_subheader), new_name in column_mapping.items():
-        try:
-            processed_df[new_name] = pd.to_numeric(df[old_header][old_subheader], errors='coerce')
-        except:
-            continue
-    
-    # Calculate energy density
-    if all(x in processed_df.columns for x in ['power', 'speed', 'hatch', 'thickness']):
-        mask = (processed_df['speed'] > 0) & (processed_df['hatch'] > 0) & (processed_df['thickness'] > 0)
-        processed_df.loc[mask, 'energy_density'] = (
-            processed_df.loc[mask, 'power'] / 
-            (processed_df.loc[mask, 'speed'] * processed_df.loc[mask, 'hatch'] * processed_df.loc[mask, 'thickness'])
-        )
-    
-    return processed_df
+        # Map columns based on actual data structure
+        column_map = {
+            'W': 'power',
+            'mm/s': 'speed',
+            'Hatch ': 'hatch',
+            'thickness': 'thickness',
+            'p/v': 'p_v_ratio',
+            'Direction': 'build_direction',
+            'solution temp': 'solution_temp',
+            'ageing temp': 'ageing_temp',
+            'Sol time': 'solution_time',
+            'ageing time': 'ageing_time',
+        }
+        
+        # Map UTS/YS columns
+        uts_col = next((col for col in df.columns if 'UTS' in str(col)), None)
+        if uts_col:
+            column_map[uts_col] = 'uts'
+        
+        ys_col = next((col for col in df.columns if 'YS' in str(col)), None)
+        if ys_col:
+            column_map[ys_col] = 'ys'
+            
+        elongation_col = next((col for col in df.columns if 'Elongation' in str(col)), None)
+        if elongation_col:
+            column_map[elongation_col] = 'elongation'
+            
+        hardness_col = next((col for col in df.columns if 'hardness' in str(col) or 'HV' in str(col)), None)
+        if hardness_col:
+            column_map[hardness_col] = 'hardness'
+        
+        # Rename columns that exist in our mapping
+        for old_col, new_col in column_map.items():
+            if old_col in df.columns:
+                df[new_col] = pd.to_numeric(df[old_col], errors='coerce')
+        
+        # Calculate energy density if possible
+        if all(x in df.columns for x in ['power', 'speed', 'hatch', 'thickness']):
+            mask = (df['speed'] > 0) & (df['hatch'] > 0) & (df['thickness'] > 0)
+            df.loc[mask, 'energy_density'] = (
+                df.loc[mask, 'power'] / 
+                (df.loc[mask, 'speed'] * df.loc[mask, 'hatch'] * df.loc[mask, 'thickness'])
+            )
+        
+        return df[list(column_map.values()) + ['energy_density']] if 'energy_density' in df.columns else df[list(column_map.values())]
+        
+    except Exception as e:
+        st.error(f"Error processing data: {str(e)}")
+        return None
 
 def main():
     st.title("🔬 LPBF AlSi10Mg Analysis Dashboard")
@@ -81,10 +90,7 @@ def main():
             
             if analysis == "Process-Property Relationships":
                 process_params = ['power', 'speed', 'hatch', 'thickness', 'energy_density', 'p_v_ratio']
-                properties = [
-                    'uts_ab', 'ys_ab', 'elongation_ab', 'hardness_ab',
-                    'uts_ht', 'ys_ht', 'elongation_ht', 'hardness_ht'
-                ]
+                properties = ['uts', 'ys', 'elongation', 'hardness']
                 
                 # Filter available parameters
                 available_process = [p for p in process_params if p in df.columns]
@@ -108,26 +114,37 @@ def main():
                         )
                     
                     if x_param and y_param:
+                        # Create basic scatter plot without trendline
                         fig = px.scatter(
                             df,
                             x=x_param,
                             y=y_param,
                             color='build_direction' if 'build_direction' in df.columns else None,
-                            trendline="ols",
                             labels={
                                 x_param: x_param.replace('_', ' ').upper(),
                                 y_param: y_param.replace('_', ' ').upper()
-                            }
+                            },
+                            title=f"{y_param.upper()} vs {x_param.upper()}"
                         )
+                        
+                        # Add custom layout
+                        fig.update_layout(
+                            height=600,
+                            xaxis_title=f"{x_param.replace('_', ' ').upper()}",
+                            yaxis_title=f"{y_param.replace('_', ' ').upper()}"
+                        )
+                        
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # Show correlation
-                        corr = df[x_param].corr(df[y_param])
-                        st.write(f"Correlation coefficient: {corr:.3f}")
+                        # Calculate and show correlation
+                        mask = df[[x_param, y_param]].notna().all(axis=1)
+                        if mask.any():
+                            corr = df[mask][x_param].corr(df[mask][y_param])
+                            st.write(f"Correlation coefficient: {corr:.3f}")
                 
             else:  # Heat Treatment Effects
                 ht_params = ['solution_temp', 'ageing_temp', 'solution_time', 'ageing_time']
-                mech_props = ['uts_ht', 'ys_ht', 'elongation_ht', 'hardness_ht']
+                mech_props = ['uts', 'ys', 'elongation', 'hardness']
                 
                 available_ht = [p for p in ht_params if p in df.columns]
                 available_props = [p for p in mech_props if p in df.columns]
@@ -139,8 +156,10 @@ def main():
                     if not plot_df.empty:
                         fig = go.Figure(data=
                             go.Parcoords(
-                                line=dict(color=plot_df[available_props[0]], 
-                                         colorscale='Viridis'),
+                                line=dict(
+                                    color=plot_df[available_props[0]], 
+                                    colorscale='Viridis'
+                                ),
                                 dimensions=[
                                     dict(
                                         range=[plot_df[col].min(), plot_df[col].max()],
@@ -150,7 +169,12 @@ def main():
                                 ]
                             )
                         )
-                        fig.update_layout(height=600)
+                        
+                        fig.update_layout(
+                            height=600,
+                            title="Heat Treatment Parameters vs Mechanical Properties"
+                        )
+                        
                         st.plotly_chart(fig, use_container_width=True)
                     else:
                         st.error("Insufficient data for heat treatment analysis")
